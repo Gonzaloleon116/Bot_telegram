@@ -33,10 +33,18 @@ async def seleccionar_categoria(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 def main():
-    TOKEN = os.getenv("8431268283:AAFm2P81NdB4nMGn99Ka1mD6BLipHep5Xgw")
+  
+    TOKEN = os.getenv("TOKEN") 
+    
+
+    if not TOKEN:
+        print("Error: No se encontró la variable de entorno 'TOKEN'")
+        return
 
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
+    
+
+    app.add_handler(CommandHandler(["start", "Iniciar"], start))
     app.add_handler(CallbackQueryHandler(seleccionar_categoria))
 
     print("Bot corriendo en Railway...")
@@ -44,3 +52,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
