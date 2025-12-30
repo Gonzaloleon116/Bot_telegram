@@ -137,18 +137,20 @@ async def agregar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ocurrió un error al intentar guardar.")
 
 def main():
+    def main():
     TOKEN = os.getenv("TOKEN") 
     if not TOKEN:
         print("Error: No se encontró el TOKEN")
         return
 
-    # --- CAMBIO IMPORTANTE AQUI ---
-    # Configuramos una petición con más tiempo de espera (60 segundos)
-    request_config = HTTPXRequest(connect_timeout=60, read_timeout=60)
+)
+    request_config = HTTPXRequest(
+        connect_timeout=20.0,
+        read_timeout=20.0,
+        http_version="1.1" 
+    )
 
-    # Agregamos .request(request_config) al constructor
     app = ApplicationBuilder().token(TOKEN).request(request_config).build()
-    # ------------------------------
 
     app.add_handler(CommandHandler(["start", "Iniciar"], start))
     app.add_handler(CommandHandler("cita", enviar_cita))
@@ -156,7 +158,10 @@ def main():
     app.add_handler(CommandHandler("agregar", agregar_cita))
 
     print("Bot corriendo con MySQL...")
-    app.run_polling()
+    
+    # allow_api_error_retry: Si Telegram falla momentáneamente, lo intenta de nuevo
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
+
