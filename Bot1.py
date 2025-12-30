@@ -7,10 +7,10 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes
 )
-# Importamos HTTPXRequest para configurar la conexión avanzada
+# Importamos la herramienta de conexión
 from telegram.request import HTTPXRequest
 
-# --- 1. FUNCIÓN PARA CONECTARSE A LA BASE DE DATOS ---
+# --- 1. FUNCIÓN DE CONEXIÓN A BASE DE DATOS ---
 def get_db_connection():
     return mysql.connector.connect(
         host=os.getenv("MYSQLHOST"),
@@ -142,11 +142,12 @@ def main():
         print("Error: No se encontró el TOKEN")
         return
 
-    # --- CONFIGURACIÓN DE CONEXIÓN CORREGIDA ---
+    # --- CONFIGURACIÓN CORREGIDA ---
+    # Eliminamos el comando 'http_version' que causaba el error.
+    # Solo dejamos los timeouts para dar paciencia a la conexión.
     request_config = HTTPXRequest(
         connect_timeout=60.0,
-        read_timeout=60.0,
-        http_version="1.1"
+        read_timeout=60.0
     )
 
     app = ApplicationBuilder().token(TOKEN).request(request_config).build()
