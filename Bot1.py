@@ -7,7 +7,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes
 )
-# Importamos la configuración de red
 from telegram.request import HTTPXRequest
 
 # --- CONEXIÓN A BASE DE DATOS ---
@@ -94,10 +93,12 @@ async def agregar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     TOKEN = os.getenv("TOKEN")
-    if not TOKEN: return print("Falta TOKEN")
+    if not TOKEN: 
+        print("Error: Falta TOKEN")
+        return
 
-    # --- CONFIGURACIÓN BLINDADA (ESTA ES LA CLAVE) ---
-    # http_version="1.1" fuerza el uso del protocolo antiguo que es más estable
+    # --- AQUÍ ESTÁ EL TRUCO ---
+    # Forzamos HTTP 1.1. Esto suele saltarse el bloqueo de Railway.
     req = HTTPXRequest(
         connect_timeout=60.0, 
         read_timeout=60.0, 
