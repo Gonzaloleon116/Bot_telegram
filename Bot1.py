@@ -104,6 +104,49 @@ async def enviar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error obteniendo cita: {e}")
         await update.message.reply_text("❌ Error de conexión con la base de datos.")
 
+# --- FUNCIÓN NUEVA: AGREGAR CITA DESDE TELEGRAM ---
+async def agregar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    admin_id = os.getenv("ADMIN_ID") # Leemos tu ID de Railway
+
+    # 1. SEGURIDAD: Verificamos si eres tú
+    if str(user_id) != str(admin_id):
+        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
+        return
+
+    # 2. LÓGICA: Entendemos el mensaje
+    # El mensaje viene así: "/agregar joven Texto de la cita..."
+    try:
+        # args es una lista de palabras. args[0] es la categoría, el resto es la cita
+        if len(context.args) < 2:
+            await update.message.reply_text("⚠️ Uso correcto: /agregar [nino/joven/adulto] [Texto de la cita]")
+            return
+
+        categoria = context.args[0].lower() # Primera palabra (ej: joven)
+        texto_cita = ' '.join(context.args[1:]) # El resto de las palabras unidas
+
+        # Validamos que la categoría sea correcta
+        if categoria not in ['nino', 'joven', 'adulto']:
+            await update.message.reply_text("❌ Categoría inválida. Usa: nino, joven o adulto.")
+            return
+
+        # 3. BASE DE DATOS: Guardamos la nueva cita
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        sql = "INSERT INTO citas (texto, categoria) VALUES (%s, %s)"
+        cursor.execute(sql, (texto_cita, categoria))
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+
+        await update.message.reply_text(f"✅ ¡Cita guardada exitosamente en la categoría **{categoria}**!")
+
+    except Exception as e:
+        print(f"Error agregando cita: {e}")
+        await update.message.reply_text("❌ Ocurrió un error al intentar guardar.")
+
 def main():
     TOKEN = os.getenv("TOKEN") 
     if not TOKEN:
@@ -115,9 +158,11 @@ def main():
     app.add_handler(CommandHandler(["start", "Iniciar"], start))
     app.add_handler(CommandHandler("cita", enviar_cita))
     app.add_handler(CallbackQueryHandler(seleccionar_categoria))
+    app.add_handler(CommandHandler("agregar", agregar_cita))
     
     print("Bot corriendo con MySQL...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+
