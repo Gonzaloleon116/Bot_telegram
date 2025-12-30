@@ -7,7 +7,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes
 )
-# IMPORTANTE: Agregamos esto para configurar la conexión
+# Importamos HTTPXRequest para configurar la conexión avanzada
 from telegram.request import HTTPXRequest
 
 # --- 1. FUNCIÓN PARA CONECTARSE A LA BASE DE DATOS ---
@@ -137,17 +137,16 @@ async def agregar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ocurrió un error al intentar guardar.")
 
 def main():
-    def main():
     TOKEN = os.getenv("TOKEN") 
     if not TOKEN:
         print("Error: No se encontró el TOKEN")
         return
 
-)
+    # --- CONFIGURACIÓN DE CONEXIÓN CORREGIDA ---
     request_config = HTTPXRequest(
-        connect_timeout=20.0,
-        read_timeout=20.0,
-        http_version="1.1" 
+        connect_timeout=60.0,
+        read_timeout=60.0,
+        http_version="1.1"
     )
 
     app = ApplicationBuilder().token(TOKEN).request(request_config).build()
@@ -158,10 +157,7 @@ def main():
     app.add_handler(CommandHandler("agregar", agregar_cita))
 
     print("Bot corriendo con MySQL...")
-    
-    # allow_api_error_retry: Si Telegram falla momentáneamente, lo intenta de nuevo
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
-
