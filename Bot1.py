@@ -7,6 +7,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes
 )
+# Importamos la configuración de red
 from telegram.request import HTTPXRequest
 
 # --- CONEXIÓN A BASE DE DATOS ---
@@ -95,8 +96,13 @@ def main():
     TOKEN = os.getenv("TOKEN")
     if not TOKEN: return print("Falta TOKEN")
 
-    # CONFIGURACIÓN SEGURA: Solo Timeouts, sin comandos raros
-    req = HTTPXRequest(connect_timeout=60.0, read_timeout=60.0)
+    # --- CONFIGURACIÓN BLINDADA (ESTA ES LA CLAVE) ---
+    # http_version="1.1" fuerza el uso del protocolo antiguo que es más estable
+    req = HTTPXRequest(
+        connect_timeout=60.0, 
+        read_timeout=60.0, 
+        http_version="1.1"
+    )
     
     app = ApplicationBuilder().token(TOKEN).request(req).build()
     
