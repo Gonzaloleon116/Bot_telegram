@@ -7,10 +7,9 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes
 )
-# Importamos la herramienta de conexión
 from telegram.request import HTTPXRequest
 
-# --- 1. FUNCIÓN DE CONEXIÓN A BASE DE DATOS ---
+# --- CONEXIÓN A BASE DE DATOS ---
 def get_db_connection():
     return mysql.connector.connect(
         host=os.getenv("MYSQLHOST"),
@@ -27,136 +26,85 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("👨 Adulto", callback_data="adulto")
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(
-        "📖 Bienvenido al Bot de Citas Bíblicas\n\n"
-        "Elige tu categoría:",
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text("📖 Bienvenido. Elige tu categoría:", reply_markup=reply_markup)
 
 async def seleccionar_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     categoria = query.data
     telegram_id = query.from_user.id
-
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-
-        sql = """
-        INSERT INTO usuarios (telegram_id, categoria) 
-        VALUES (%s, %s) 
-        ON DUPLICATE KEY UPDATE categoria = %s
-        """
+        sql = "INSERT INTO usuarios (telegram_id, categoria) VALUES (%s, %s) ON DUPLICATE KEY UPDATE categoria = %s"
         cursor.execute(sql, (telegram_id, categoria, categoria))
         conn.commit()
-
         cursor.close()
         conn.close()
-
-        await query.edit_message_text(
-            f"✅ Categoría guardada: {categoria.capitalize()}\n\n"
-            "Escribe /cita para recibir una palabra de Dios."
-        )
+        await query.edit_message_text(f"✅ Categoría guardada: {categoria.capitalize()}\nUsa /cita para leer.")
     except Exception as e:
-        print(f"Error en base de datos: {e}")
-        await query.edit_message_text("❌ Hubo un error guardando tu preferencia.")
+        print(f"Error DB: {e}")
+        await query.edit_message_text("❌ Error guardando preferencia.")
 
 async def enviar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
-
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-
         cursor.execute("SELECT categoria FROM usuarios WHERE telegram_id = %s", (telegram_id,))
         resultado = cursor.fetchone()
-
         if not resultado:
-            await update.message.reply_text("⚠️ No has elegido categoría. Usa /start primero.")
-            cursor.close()
+            await update.message.reply_text("⚠️ Usa /start primero.")
             conn.close()
             return
-
-        categoria_usuario = resultado[0]
-
-        cursor.execute(
-            "SELECT texto FROM citas WHERE categoria = %s ORDER BY RAND() LIMIT 1", 
-            (categoria_usuario,)
-        )
-        cita_resultado = cursor.fetchone()
-
-        cursor.close()
+        
+        cursor.execute("SELECT texto FROM citas WHERE categoria = %s ORDER BY RAND() LIMIT 1", (resultado[0],))
+        cita = cursor.fetchone()
         conn.close()
-
-        if cita_resultado:
-            await update.message.reply_text(f"✨ {cita_resultado[0]}")
+        
+        if cita:
+            await update.message.reply_text(f"✨ {cita[0]}")
         else:
-            await update.message.reply_text("No encontré citas para tu categoría.")
-
+            await update.message.reply_text("No hay citas para esta categoría.")
     except Exception as e:
-        print(f"Error obteniendo cita: {e}")
-        await update.message.reply_text("❌ Error de conexión con la base de datos.")
+        print(f"Error Cita: {e}")
+        await update.message.reply_text("❌ Error de conexión.")
 
 async def agregar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     admin_id = os.getenv("ADMIN_ID")
-
     if str(user_id) != str(admin_id):
-        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
+        await update.message.reply_text("⛔ Sin permiso.")
         return
-
     try:
-        if len(context.args) < 2:
-            await update.message.reply_text("⚠️ Uso: /agregar [nino/joven/adulto] [Texto]")
-            return
-
-        categoria = context.args[0].lower()
-        texto_cita = ' '.join(context.args[1:])
-
-        if categoria not in ['nino', 'joven', 'adulto']:
-            await update.message.reply_text("❌ Categoría inválida. Usa: nino, joven o adulto.")
-            return
-
+        if len(context.args) < 2: return await update.message.reply_text("Uso: /agregar [cat] [texto]")
+        cat = context.args[0].lower()
+        texto = ' '.join(context.args[1:])
+        if cat not in ['nino', 'joven', 'adulto']: return await update.message.reply_text("Categoría inválida.")
+        
         conn = get_db_connection()
         cursor = conn.cursor()
-
-        sql = "INSERT INTO citas (texto, categoria) VALUES (%s, %s)"
-        cursor.execute(sql, (texto_cita, categoria))
+        cursor.execute("INSERT INTO citas (texto, categoria) VALUES (%s, %s)", (texto, cat))
         conn.commit()
-
-        cursor.close()
         conn.close()
-
-        await update.message.reply_text(f"✅ ¡Cita guardada en **{categoria}**!")
-
+        await update.message.reply_text(f"✅ Cita guardada en {cat}.")
     except Exception as e:
-        print(f"Error agregando cita: {e}")
-        await update.message.reply_text("❌ Ocurrió un error al intentar guardar.")
+        await update.message.reply_text("❌ Error al guardar.")
 
 def main():
-    TOKEN = os.getenv("TOKEN") 
-    if not TOKEN:
-        print("Error: No se encontró el TOKEN")
-        return
+    TOKEN = os.getenv("TOKEN")
+    if not TOKEN: return print("Falta TOKEN")
 
-    # --- CONFIGURACIÓN CORREGIDA ---
-    # Eliminamos el comando 'http_version' que causaba el error.
-    # Solo dejamos los timeouts para dar paciencia a la conexión.
-    request_config = HTTPXRequest(
-        connect_timeout=60.0,
-        read_timeout=60.0
-    )
-
-    app = ApplicationBuilder().token(TOKEN).request(request_config).build()
-
+    # CONFIGURACIÓN SEGURA: Solo Timeouts, sin comandos raros
+    req = HTTPXRequest(connect_timeout=60.0, read_timeout=60.0)
+    
+    app = ApplicationBuilder().token(TOKEN).request(req).build()
+    
     app.add_handler(CommandHandler(["start", "Iniciar"], start))
     app.add_handler(CommandHandler("cita", enviar_cita))
     app.add_handler(CallbackQueryHandler(seleccionar_categoria))
     app.add_handler(CommandHandler("agregar", agregar_cita))
-
+    
     print("Bot corriendo con MySQL...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
