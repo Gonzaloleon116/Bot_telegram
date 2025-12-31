@@ -1,4 +1,6 @@
 import os
+import threading
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 import mysql.connector
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -9,7 +11,17 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-# --- CONEXIÓN A BASE DE DATOS ---
+# --- 0. EL TRUCO PARA RENDER (SERVIDOR FALSO) ---
+# Esto crea un servidor web tonto para que Render no nos apague el bot
+def start_dummy_server():
+    # Render nos da un puerto en la variable de entorno PORT. Si no hay, usa 8080.
+    port = int(os.environ.get("PORT", 8080))
+    # Creamos un servidor simple
+    server = HTTPServer(("", port), SimpleHTTPRequestHandler)
+    print(f"🖥️ Servidor falso corriendo en el puerto {port} para engañar a Render.")
+    server.serve_forever()
+
+# --- 1. CONEXIÓN A BASE DE DATOS ---
 def get_db_connection():
     return mysql.connector.connect(
         host=os.getenv("MYSQLHOST"),
@@ -97,13 +109,13 @@ def main():
         print("Error: Falta TOKEN")
         return
 
-    # --- AQUÍ ESTÁ EL TRUCO ---
-    # Forzamos HTTP 1.1. Esto suele saltarse el bloqueo de Railway.
-    req = HTTPXRequest(
-        connect_timeout=60.0, 
-        read_timeout=60.0, 
-        http_version="1.1"
-    )
+    # --- INICIO DEL SERVIDOR FALSO ---
+    # Lo lanzamos en un "hilo" separado (background) para que no bloquee al bot
+    threading.Thread(target=start_dummy_server, daemon=True).start()
+
+    # --- INICIO DEL BOT ---
+    # Usamos HTTP 1.1 para evitar bloqueos
+    req = HTTPXRequest(connect_timeout=60.0, read_timeout=60.0, http_version="1.1")
     
     app = ApplicationBuilder().token(TOKEN).request(req).build()
     
