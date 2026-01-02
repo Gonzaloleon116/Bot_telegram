@@ -11,14 +11,11 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-# --- 0. EL TRUCO PARA RENDER (SERVIDOR FALSO) ---
-# Esto crea un servidor web tonto para que Render no nos apague el bot
+# --- 0. SERVIDOR FALSO PARA RENDER ---
 def start_dummy_server():
-    # Render nos da un puerto en la variable de entorno PORT. Si no hay, usa 8080.
     port = int(os.environ.get("PORT", 8080))
-    # Creamos un servidor simple
     server = HTTPServer(("", port), SimpleHTTPRequestHandler)
-    print(f"🖥️ Servidor falso corriendo en el puerto {port} para engañar a Render.")
+    print(f"🖥️ Servidor falso corriendo en el puerto {port}")
     server.serve_forever()
 
 # --- 1. CONEXIÓN A BASE DE DATOS ---
@@ -82,26 +79,50 @@ async def enviar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error Cita: {e}")
         await update.message.reply_text("❌ Error de conexión.")
 
+# --- AQUÍ ESTÁ EL CAMBIO DE DIAGNÓSTICO ---
 async def agregar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     admin_id = os.getenv("ADMIN_ID")
-    if str(user_id) != str(admin_id):
-        await update.message.reply_text("⛔ Sin permiso.")
+    
+    # 1. DIAGNÓSTICO DE VARIABLES
+    if not admin_id:
+        await update.message.reply_text("⚠️ Error Crítico: La variable ADMIN_ID no existe en Render.")
         return
+
+    # Limpiamos espacios en blanco por si acaso (ej: " 12345 ")
+    if str(user_id).strip() != str(admin_id).strip():
+        # ESTO ES LO NUEVO: Te dirá qué IDs está comparando
+        await update.message.reply_text(
+            f"⛔ Acceso Denegado.\n"
+            f"Tu ID real: `{user_id}`\n"
+            f"ID en Render: `{admin_id}`\n"
+            f"¡Deben ser idénticos!",
+            parse_mode="Markdown"
+        )
+        return
+
     try:
-        if len(context.args) < 2: return await update.message.reply_text("Uso: /agregar [cat] [texto]")
+        if len(context.args) < 2: 
+            await update.message.reply_text("⚠️ Uso: /agregar [nino/joven/adulto] [texto]")
+            return
+            
         cat = context.args[0].lower()
         texto = ' '.join(context.args[1:])
-        if cat not in ['nino', 'joven', 'adulto']: return await update.message.reply_text("Categoría inválida.")
+        
+        if cat not in ['nino', 'joven', 'adulto']: 
+            await update.message.reply_text("❌ Categoría inválida. Usa: nino, joven, adulto")
+            return
         
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("INSERT INTO citas (texto, categoria) VALUES (%s, %s)", (texto, cat))
         conn.commit()
         conn.close()
-        await update.message.reply_text(f"✅ Cita guardada en {cat}.")
+        await update.message.reply_text(f"✅ ¡Cita guardada en **{cat}**!")
+        
     except Exception as e:
-        await update.message.reply_text("❌ Error al guardar.")
+        # Si falla la base de datos, te lo dirá en el chat
+        await update.message.reply_text(f"❌ Error Técnico: {str(e)}")
 
 def main():
     TOKEN = os.getenv("TOKEN")
@@ -109,12 +130,8 @@ def main():
         print("Error: Falta TOKEN")
         return
 
-    # --- INICIO DEL SERVIDOR FALSO ---
-    # Lo lanzamos en un "hilo" separado (background) para que no bloquee al bot
     threading.Thread(target=start_dummy_server, daemon=True).start()
 
-    # --- INICIO DEL BOT ---
-    # Usamos HTTP 1.1 para evitar bloqueos
     req = HTTPXRequest(connect_timeout=60.0, read_timeout=60.0, http_version="1.1")
     
     app = ApplicationBuilder().token(TOKEN).request(req).build()
