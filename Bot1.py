@@ -229,6 +229,44 @@ async def manejar_confirmacion(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(f"✅ **Guardado forzado** en {datos['cat']}:\n\n📝 {datos['frase']}\n📖 {datos['ref']}", parse_mode="Markdown")
         context.user_data.pop('temp_cita', None)
 
+# --- FUNCIÓN DE EMERGENCIA PARA ARREGLAR LA TABLA ---
+async def reset_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    admin_id = os.getenv("ADMIN_ID")
+    
+    # Solo tú puedes usar esto
+    if str(user_id).strip() != str(admin_id).strip():
+        await update.message.reply_text("⛔ No tienes permiso para reiniciar la base de datos.")
+        return
+
+    await update.message.reply_text("⚠️ Iniciando reparación de la base de datos... Espera.")
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 1. Borramos la tabla defectuosa
+        cursor.execute("DROP TABLE IF EXISTS citas")
+        
+        # 2. La creamos de nuevo (limpia y con las columnas correctas)
+        cursor.execute("""
+        CREATE TABLE citas (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            frase TEXT NOT NULL,
+            referencia VARCHAR(255) NOT NULL,
+            categoria VARCHAR(50) NOT NULL
+        )
+        """)
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        await update.message.reply_text("✅ **¡Éxito!** La tabla 'citas' ha sido reconstruida.\nAhora intenta usar /agregar de nuevo.")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Falló la reparación: {e}")
+        
 def main():
     TOKEN = os.getenv("TOKEN")
     if not TOKEN: return
@@ -243,7 +281,8 @@ def main():
     app.add_handler(CommandHandler(["start", "Iniciar"], start))
     app.add_handler(CommandHandler("cita", enviar_cita))
     app.add_handler(CommandHandler("agregar", agregar_cita))
-    
+
+    app.add_handler(CommandHandler("reset", reset_db))
     # Handler específico para categorías (nino, joven, adulto)
     app.add_handler(CallbackQueryHandler(seleccionar_categoria, pattern='^(nino|joven|adulto)$'))
     
@@ -255,3 +294,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
