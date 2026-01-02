@@ -1,5 +1,6 @@
 import os
 import threading
+import re
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 import mysql.connector
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,14 +12,14 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-# --- 0. SERVIDOR FALSO PARA RENDER ---
+# --- SERVIDOR FALSO ---
 def start_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("", port), SimpleHTTPRequestHandler)
     print(f"🖥️ Servidor falso corriendo en el puerto {port}")
     server.serve_forever()
 
-# --- 1. CONEXIÓN A BASE DE DATOS ---
+# --- BASE DE DATOS ---
 def get_db_connection():
     return mysql.connector.connect(
         host=os.getenv("MYSQLHOST"),
@@ -79,49 +80,61 @@ async def enviar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error Cita: {e}")
         await update.message.reply_text("❌ Error de conexión.")
 
-# --- AQUÍ ESTÁ EL CAMBIO DE DIAGNÓSTICO ---
 async def agregar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     admin_id = os.getenv("ADMIN_ID")
     
-    # 1. DIAGNÓSTICO DE VARIABLES
-    if not admin_id:
-        await update.message.reply_text("⚠️ Error Crítico: La variable ADMIN_ID no existe en Render.")
-        return
-
-    # Limpiamos espacios en blanco por si acaso (ej: " 12345 ")
-    if str(user_id).strip() != str(admin_id).strip():
-        # ESTO ES LO NUEVO: Te dirá qué IDs está comparando
-        await update.message.reply_text(
-            f"⛔ Acceso Denegado.\n"
-            f"Tu ID real: `{user_id}`\n"
-            f"ID en Render: `{admin_id}`\n"
-            f"¡Deben ser idénticos!",
-            parse_mode="Markdown"
-        )
+    # 1. Seguridad
+    if not admin_id or str(user_id).strip() != str(admin_id).strip():
+        await update.message.reply_text("⛔ Sin permiso de administrador.")
         return
 
     try:
         if len(context.args) < 2: 
-            await update.message.reply_text("⚠️ Uso: /agregar [nino/joven/adulto] [texto]")
+            await update.message.reply_text("⚠️ Uso: /agregar [cat] [Cita Biblica]")
             return
             
         cat = context.args[0].lower()
-        texto = ' '.join(context.args[1:])
+        texto_completo = ' '.join(context.args[1:])
         
+        # 2. Validación de Categoría
         if cat not in ['nino', 'joven', 'adulto']: 
             await update.message.reply_text("❌ Categoría inválida. Usa: nino, joven, adulto")
             return
         
+        # 3. Validación de Formato (Capítulo:Versículo)
+        if not re.search(r"\d+:\d+", texto_completo):
+            await update.message.reply_text("❌ Error: Falta la referencia (Ej: Juan 3:16)")
+            return
+        
+        # --- AQUÍ EMPIEZA LA CONEXIÓN ---
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO citas (texto, categoria) VALUES (%s, %s)", (texto, cat))
+
+        # 4. VALIDACIÓN DE DUPLICADOS (NUEVO)
+        # Buscamos si existe EXACTAMENTE el mismo texto
+        sql_check = "SELECT id FROM citas WHERE texto = %s"
+        cursor.execute(sql_check, (texto_completo,))
+        resultado = cursor.fetchone()
+
+        if resultado:
+            # Si encontró algo, detenemos todo
+            await update.message.reply_text("⚠️ **Atención:** Esa cita ya existe en la base de datos. No se guardó.")
+            cursor.close()
+            conn.close()
+            return # <-- Esto saca al bot de la función para que no guarde nada
+
+        # 5. Si no existe, guardamos
+        sql_insert = "INSERT INTO citas (texto, categoria) VALUES (%s, %s)"
+        cursor.execute(sql_insert, (texto_completo, cat))
         conn.commit()
+        
+        cursor.close()
         conn.close()
-        await update.message.reply_text(f"✅ ¡Cita guardada en **{cat}**!")
+        
+        await update.message.reply_text(f"✅ ¡Cita guardada correctamente en **{cat}**!")
         
     except Exception as e:
-        # Si falla la base de datos, te lo dirá en el chat
         await update.message.reply_text(f"❌ Error Técnico: {str(e)}")
 
 def main():
