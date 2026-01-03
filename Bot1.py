@@ -1,6 +1,8 @@
 import os
 import threading
 import re
+import datetime
+import pytz
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 import mysql.connector
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,14 +14,25 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-# --- 1. SERVIDOR FALSO (Para mantener vivo a Render) ---
+# --- CONFIGURACIÓN ---
+# Zona horaria (Cámbiala si tus usuarios son de otro país)
+ZONA_HORARIA = 'America/Mexico_City'
+
+# Temas por mes (Esto ayuda a filtrar el plan de lectura)
+TEMAS_MENSUALES = {
+    1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
+    5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+    9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre"
+}
+
+# --- SERVIDOR FALSO ---
 def start_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("", port), SimpleHTTPRequestHandler)
     print(f"🖥️ Servidor falso corriendo en el puerto {port}")
     server.serve_forever()
 
-# --- 2. CONEXIÓN A BASE DE DATOS ---
+# --- CONEXIÓN DB ---
 def get_db_connection():
     return mysql.connector.connect(
         host=os.getenv("MYSQLHOST"),
@@ -29,198 +42,232 @@ def get_db_connection():
         port=os.getenv("MYSQLPORT")
     )
 
-# --- 3. UTILIDADES ---
-def limpiar_texto(texto):
-    # Quita símbolos para comparar duplicados (ej: "Juan 3:16" == "(Juan 3:16)")
-    return re.sub(r'[^\w\s]', '', str(texto)).lower().strip()
+# --- FUNCIÓN CENTRAL: GUARDAR HORARIO Y ACTIVAR ALARMA ---
+async def guardar_y_activar_alarma(chat_id, hora_str, context):
+    try:
+        # 1. Guardar en Base de Datos
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Guardamos la hora. Si el usuario no existe, lo creamos con categoría default
+        sql = """
+            INSERT INTO usuarios (telegram_id, hora_recordatorio, categoria) 
+            VALUES (%s, %s, 'joven') 
+            ON DUPLICATE KEY UPDATE hora_recordatorio = %s
+        """
+        cursor.execute(sql, (chat_id, hora_str, hora_str))
+        conn.commit()
+        conn.close()
 
-def guardar_en_db(frase, referencia, categoria):
+        # 2. Programar en Telegram (JobQueue)
+        # Primero borramos alarmas viejas para no duplicar
+        jobs_existentes = context.job_queue.get_jobs_by_name(str(chat_id))
+        for job in jobs_existentes:
+            job.schedule_removal()
+            
+        # Convertimos texto "07:00" a objeto de tiempo
+        h, m = map(int, hora_str.split(':'))
+        time_to_run = datetime.time(hour=h, minute=m, tzinfo=pytz.timezone(ZONA_HORARIA))
+        
+        # Agendamos
+        context.job_queue.run_daily(enviar_recordatorio, time_to_run, chat_id=chat_id, name=str(chat_id))
+        
+        return True
+    except Exception as e:
+        print(f"Error programando: {e}")
+        return False
+
+# --- LÓGICA DE ENVÍO (MODIFICADA PARA LECTURA BÍBLICA) ---
+async def enviar_recordatorio(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    telegram_id = job.chat_id
+    
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO citas (frase, referencia, categoria) VALUES (%s, %s, %s)", (frase, referencia, categoria))
-        conn.commit()
+        
+        # Obtenemos datos del usuario
+        cursor.execute("SELECT categoria FROM usuarios WHERE telegram_id = %s", (telegram_id,))
+        res_cat = cursor.fetchone()
+        
+        if not res_cat:
+            conn.close()
+            return 
+        
+        categoria_usuario = res_cat[0]
+        
+        # Lógica del Plan de Lectura (Por Mes)
+        mes_actual = datetime.datetime.now().month
+        tema_del_mes = TEMAS_MENSUALES.get(mes_actual, "general")
+        
+        # Buscamos la lectura correspondiente
+        # Ahora 'referencia' será el rango (Ej: Deut 1-4) y 'frase' un comentario motivacional
+        sql = """
+            SELECT frase, referencia FROM citas 
+            WHERE categoria = %s AND (tema = %s OR tema = 'general')
+            ORDER BY (tema = %s) DESC, RAND() 
+            LIMIT 1
+        """
+        cursor.execute(sql, (categoria_usuario, tema_del_mes, tema_del_mes))
+        lectura = cursor.fetchone()
         conn.close()
-        return True
-    except:
-        return False
+        
+        if lectura:
+            # lectura[0] = Comentario / Frase
+            # lectura[1] = Rango de Lectura (Ej: Deuteronomio 1-4)
+            msg = (
+                f"🔔 **¡Hora de tu Lectura Diaria!**\n"
+                f"📅 Plan de: *{tema_del_mes.capitalize()}*\n\n"
+                f"📖 **Lectura de hoy:**\n"
+                f"👉 `{lectura[1]}`\n\n"
+                f"💭 _{lectura[0]}_"
+            )
+            await context.bot.send_message(chat_id=telegram_id, text=msg, parse_mode="Markdown")
+        else:
+            await context.bot.send_message(chat_id=telegram_id, text="¡Es hora de leer la Biblia! (Abre tu plan de lectura personal).")
+            
+    except Exception as e:
+        print(f"Error enviando recordatorio a {telegram_id}: {e}")
 
-# --- 4. COMANDOS DEL BOT ---
+# --- COMANDOS E INTERACCIÓN ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[
-        InlineKeyboardButton("👶 Niño", callback_data="nino"),
-        InlineKeyboardButton("🧑 Joven", callback_data="joven"),
-        InlineKeyboardButton("👨 Adulto", callback_data="adulto")
+        InlineKeyboardButton("👶 Niño", callback_data="cat_nino"),
+        InlineKeyboardButton("🧑 Joven", callback_data="cat_joven"),
+        InlineKeyboardButton("👨 Adulto", callback_data="cat_adulto")
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📖 Bienvenido al Bot de Citas Bíblicas.\nElige una categoría:", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "👋 **¡Bienvenido a tu Plan Bíblico!**\n\n"
+        "Este bot te ayudará a mantener tu hábito de lectura.\n"
+        "Primero, elige tu categoría:", 
+        reply_markup=reply_markup, 
+        parse_mode="Markdown"
+    )
 
-async def enviar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    telegram_id = update.effective_user.id
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+# COMANDO /programar MEJORADO CON BOTONES
+async def programar_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Si el usuario escribió la hora manualmente: /programar 07:00
+    if context.args:
+        hora_input = context.args[0]
+        chat_id = update.effective_chat.id
         
-        # Verificamos qué preferencia tiene el usuario
-        cursor.execute("SELECT categoria FROM usuarios WHERE telegram_id = %s", (telegram_id,))
-        res = cursor.fetchone()
-        
-        if not res:
-            await update.message.reply_text("⚠️ Primero elige una categoría usando /start")
-            conn.close()
+        if not re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", hora_input):
+            await update.message.reply_text("❌ Formato incorrecto. Usa HH:MM (ej: 07:00).")
             return
-            
-        # Buscamos una cita aleatoria de esa categoría
-        cursor.execute("SELECT frase, referencia FROM citas WHERE categoria = %s ORDER BY RAND() LIMIT 1", (res[0],))
-        cita = cursor.fetchone()
-        conn.close()
-        
-        if cita:
-            await update.message.reply_text(f"✨ {cita[0]}\n\n📖 {cita[1]}")
+
+        exito = await guardar_y_activar_alarma(chat_id, hora_input, context)
+        if exito:
+            await update.message.reply_text(f"✅ ¡Listo! Alarma manual configurada a las **{hora_input}**.", parse_mode="Markdown")
         else:
-            await update.message.reply_text(f"Aún no hay citas para la categoría: {res[0]}.")
-    except Exception as e:
-        print(f"Error enviando cita: {e}")
-        await update.message.reply_text("❌ Error de conexión temporal.")
-
-async def seleccionar_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    # Verificar si es una confirmación de guardado o selección de categoría
-    if query.data.startswith("confirm_"):
-        return # Dejamos que lo maneje la otra función
-        
-    await query.answer()
-    categoria = query.data
-    telegram_id = query.from_user.id
-    
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        # Guardamos la preferencia del usuario
-        sql = "INSERT INTO usuarios (telegram_id, categoria) VALUES (%s, %s) ON DUPLICATE KEY UPDATE categoria = %s"
-        cursor.execute(sql, (telegram_id, categoria, categoria))
-        conn.commit()
-        conn.close()
-        await query.edit_message_text(f"✅ Categoría seleccionada: {categoria.capitalize()}\n\nUsa /cita para recibir una palabra.")
-    except Exception as e:
-        await query.edit_message_text("❌ Error al guardar tu selección.")
-
-async def agregar_cita(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    admin_id = os.getenv("ADMIN_ID")
-    
-    # Validación de Administrador
-    if not admin_id or str(user_id).strip() != str(admin_id).strip():
-        await update.message.reply_text("⛔ No tienes permiso para agregar citas.")
+            await update.message.reply_text("❌ Error guardando la hora.")
         return
 
-    try:
-        entrada = ' '.join(context.args)
-        if "|" not in entrada:
-            await update.message.reply_text(
-                "⚠️ **Formato Incorrecto**\nUsa: `/agregar [categoria] [Frase] | [Referencia]`\n\nEjemplo:\n`/agregar joven Todo lo puedo | Filipenses 4:13`", 
+    # Si NO escribió hora, mostramos botones (UX Mejorada)
+    keyboard = [
+        [InlineKeyboardButton("🌅 06:00 AM", callback_data="time_06:00"), InlineKeyboardButton("☀️ 07:00 AM", callback_data="time_07:00")],
+        [InlineKeyboardButton("🕗 08:00 AM", callback_data="time_08:00"), InlineKeyboardButton("🕘 09:00 AM", callback_data="time_09:00")],
+        [InlineKeyboardButton("🌙 08:00 PM", callback_data="time_20:00"), InlineKeyboardButton("💤 09:00 PM", callback_data="time_21:00")],
+        [InlineKeyboardButton("✏️ Escribir otra hora", callback_data="time_manual")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "⏰ **Configura tu Recordatorio**\n\n"
+        "Elige una hora rápida o escribe la tuya propia:", 
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+# MANEJADOR UNIVERSAL DE BOTONES (Categorías y Horas)
+async def manejar_botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    chat_id = query.from_user.id
+
+    # CASO 1: Selección de Categoría
+    if data.startswith("cat_"):
+        categoria = data.replace("cat_", "") # quitamos el prefijo
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            sql = "INSERT INTO usuarios (telegram_id, categoria) VALUES (%s, %s) ON DUPLICATE KEY UPDATE categoria = %s"
+            cursor.execute(sql, (chat_id, categoria, categoria))
+            conn.commit()
+            conn.close()
+            
+            # Al elegir categoría, le sugerimos programar la hora inmediatamente
+            await query.edit_message_text(
+                f"✅ Categoría guardada: **{categoria.capitalize()}**.\n\n"
+                "Ahora, configura a qué hora quieres leer:",
                 parse_mode="Markdown"
             )
-            return
+            # Llamamos a la función de programar para mostrar los botones de hora ahí mismo
+            # (Truco: pasamos argumentos vacíos para que muestre el menú)
+            context.args = []
+            await programar_horario(update, context)
+            
+        except Exception:
+            await query.edit_message_text("❌ Error guardando categoría.")
 
-        # Separación de datos
-        partes = entrada.split(' ', 1)
-        categoria = partes[0].lower()
-        resto = partes[1]
+    # CASO 2: Selección de Hora (Botones rápidos)
+    elif data.startswith("time_"):
+        hora = data.replace("time_", "")
         
-        if categoria not in ['nino', 'joven', 'adulto']:
-            await update.message.reply_text("❌ Categoría inválida. Usa: nino, joven o adulto.")
+        if hora == "manual":
+            await query.edit_message_text("✏️ Escribe el comando así:\n`/programar 15:30` (para las 3:30 PM)", parse_mode="Markdown")
             return
 
-        frase_in, ref_in = resto.split("|", 1)
-        frase_in = frase_in.strip()
-        ref_in = ref_in.strip()
+        exito = await guardar_y_activar_alarma(chat_id, hora, context)
+        if exito:
+            await query.edit_message_text(f"✅ ¡Excelente! Te recordaré leer la biblia todos los días a las **{hora}**.", parse_mode="Markdown")
+        else:
+            await query.edit_message_text("❌ Hubo un error al guardar la hora.")
 
-        # Validación de Duplicados
+# --- RESTAURACIÓN AL INICIAR ---
+async def restaurar_alarmas(application):
+    print("🔄 Restaurando alarmas...")
+    try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT frase, referencia FROM citas")
-        todas = cursor.fetchall()
+        cursor.execute("SELECT telegram_id, hora_recordatorio FROM usuarios WHERE hora_recordatorio IS NOT NULL")
+        usuarios = cursor.fetchall()
         conn.close()
-
-        input_f_clean = limpiar_texto(frase_in)
-        input_r_clean = limpiar_texto(ref_in)
-
-        advertencia = ""
         
-        for db_frase, db_ref in todas:
-            db_f_clean = limpiar_texto(db_frase)
-            db_r_clean = limpiar_texto(db_ref)
-
-            # 1. Duplicado EXACTO -> Bloqueo
-            if input_f_clean == db_f_clean and input_r_clean == db_r_clean:
-                await update.message.reply_text("⛔ **Error:** Esta cita ya existe idéntica en la base de datos.", parse_mode="Markdown")
-                return
-
-            # 2. Similitud Parcial -> Advertencia con Botones
-            if input_f_clean == db_f_clean:
-                advertencia = f"⚠️ La frase ya existe en: '{db_ref}'"
-            elif input_r_clean == db_r_clean:
-                advertencia = f"⚠️ La referencia ya existe con: '{db_frase}'"
-
-        if advertencia:
-            # Guardar en memoria temporal y pedir confirmación
-            context.user_data['temp_cita'] = {'frase': frase_in, 'ref': ref_in, 'cat': categoria}
-            keyboard = [[
-                InlineKeyboardButton("✅ Sí, guardar", callback_data="confirm_yes"),
-                InlineKeyboardButton("❌ Cancelar", callback_data="confirm_no")
-            ]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(f"{advertencia}\n\n¿Quieres guardarla de todos modos?", reply_markup=reply_markup)
-        else:
-            # Guardar directo
-            if guardar_en_db(frase_in, ref_in, categoria):
-                await update.message.reply_text(f"✅ Guardado en **{categoria}**.", parse_mode="Markdown")
-            else:
-                await update.message.reply_text("❌ Error al escribir en la base de datos.")
-
+        count = 0
+        for uid, hora_str in usuarios:
+            try:
+                h, m = map(int, hora_str.split(':'))
+                tz = pytz.timezone(ZONA_HORARIA)
+                time_to_run = datetime.time(hour=h, minute=m, tzinfo=tz)
+                application.job_queue.run_daily(enviar_recordatorio, time_to_run, chat_id=uid, name=str(uid))
+                count += 1
+            except Exception: pass
+        print(f"✅ {count} alarmas activas.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
-
-async def manejar_confirmacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "confirm_no":
-        await query.edit_message_text("❌ Operación cancelada.")
-        context.user_data.pop('temp_cita', None)
-        return
-
-    if query.data == "confirm_yes":
-        datos = context.user_data.get('temp_cita')
-        if not datos:
-            await query.edit_message_text("⚠️ Error: Datos expirados.")
-            return
-            
-        guardar_en_db(datos['frase'], datos['ref'], datos['cat'])
-        await query.edit_message_text(f"✅ **Guardado forzado** en {datos['cat']}.", parse_mode="Markdown")
-        context.user_data.pop('temp_cita', None)
+        print(f"❌ Error restaurando: {e}")
 
 def main():
     TOKEN = os.getenv("TOKEN")
     if not TOKEN: return
 
-    # Iniciamos servidor falso para Render
     threading.Thread(target=start_dummy_server, daemon=True).start()
     
-    # Configuración de red para evitar bloqueos
     req = HTTPXRequest(connect_timeout=60.0, read_timeout=60.0, http_version="1.1")
-    app = ApplicationBuilder().token(TOKEN).request(req).build()
+    
+    async def post_init(application):
+        await restaurar_alarmas(application)
+
+    app = ApplicationBuilder().token(TOKEN).request(req).post_init(post_init).build()
     
     # Handlers
     app.add_handler(CommandHandler(["start", "Iniciar"], start))
-    app.add_handler(CommandHandler("cita", enviar_cita))
-    app.add_handler(CommandHandler("agregar", agregar_cita))
-    app.add_handler(CallbackQueryHandler(seleccionar_categoria, pattern='^(nino|joven|adulto)$'))
-    app.add_handler(CallbackQueryHandler(manejar_confirmacion, pattern='^confirm_'))
-    
-    print("Bot corriendo con MySQL (Modo Seguro)...")
+    app.add_handler(CommandHandler("programar", programar_horario))
+    # Un solo CallbackQueryHandler maneja TODO (categorías y horas)
+    app.add_handler(CallbackQueryHandler(manejar_botones))
+
+    print("Bot corriendo con Plan de Lectura...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
