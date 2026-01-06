@@ -17,7 +17,7 @@ from telegram.request import HTTPXRequest
 # --- CONFIGURACIÓN ---
 ZONA_HORARIA = 'America/Mexico_City'
 
-# --- 1. SERVIDOR FALSO (Keep-Alive) ---
+# --- 1. SERVIDOR FALSO ---
 def start_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("", port), SimpleHTTPRequestHandler)
@@ -34,7 +34,7 @@ def get_db_connection():
         port=os.getenv("MYSQLPORT")
     )
 
-# --- 3. LÓGICA DE ALARMA DIARIA (PLAN DE LECTURA) ---
+# --- 3. LÓGICA DE ALARMA DIARIA ---
 async def enviar_recordatorio(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     telegram_id = job.chat_id
@@ -43,7 +43,7 @@ async def enviar_recordatorio(context: ContextTypes.DEFAULT_TYPE):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # A. Buscamos categoría
+        # A. Categoría
         cursor.execute("SELECT categoria FROM usuarios WHERE telegram_id = %s", (telegram_id,))
         res_cat = cursor.fetchone()
         
@@ -53,23 +53,17 @@ async def enviar_recordatorio(context: ContextTypes.DEFAULT_TYPE):
         
         categoria_usuario = res_cat[0]
         
-        # B. Fecha Actual
+        # B. Fecha
         ahora = datetime.datetime.now(pytz.timezone(ZONA_HORARIA))
         mes_actual = ahora.month
         dia_actual = ahora.day
         
-        # C. Consulta Relacional (JOIN)
+        # C. Consulta Relacional
         sql = """
-            SELECT 
-                libros.nombre,
-                plan_lectura.capitulos,
-                plan_lectura.mensaje
+            SELECT libros.nombre, plan_lectura.capitulos, plan_lectura.mensaje
             FROM plan_lectura
             INNER JOIN libros ON plan_lectura.libro_id = libros.id
-            WHERE 
-                plan_lectura.categoria = %s AND 
-                plan_lectura.mes = %s AND 
-                plan_lectura.dia = %s
+            WHERE plan_lectura.categoria = %s AND plan_lectura.mes = %s AND plan_lectura.dia = %s
             LIMIT 1
         """
         
@@ -80,8 +74,7 @@ async def enviar_recordatorio(context: ContextTypes.DEFAULT_TYPE):
         if resultado:
             msg = (
                 f"🔔 **Plan Diario - {dia_actual}/{mes_actual}**\n\n"
-                f"📖 **Lectura de hoy:**\n"
-                f"👉 *{resultado[0]} {resultado[1]}*\n\n"
+                f"📖 **Lectura de hoy:**\n👉 *{resultado[0]} {resultado[1]}*\n\n"
                 f"💭 _{resultado[2]}_"
             )
             await context.bot.send_message(chat_id=telegram_id, text=msg, parse_mode="Markdown")
@@ -100,8 +93,6 @@ async def guardar_y_activar_alarma(chat_id, hora_str, context):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Insertar o Actualizar hora
-        # NOTA: Usamos ON DUPLICATE KEY UPDATE para no fallar si ya existe
         sql = """
             INSERT INTO usuarios (telegram_id, hora_recordatorio, categoria) 
             VALUES (%s, %s, 'joven') 
@@ -111,24 +102,18 @@ async def guardar_y_activar_alarma(chat_id, hora_str, context):
         conn.commit()
         conn.close()
 
-        # Limpiar jobs anteriores
         jobs_existentes = context.job_queue.get_jobs_by_name(str(chat_id))
-        for job in jobs_existentes:
-            job.schedule_removal()
+        for job in jobs_existentes: job.schedule_removal()
             
-        # Programar nuevo
         h, m = map(int, hora_str.split(':'))
         time_to_run = datetime.time(hour=h, minute=m, tzinfo=pytz.timezone(ZONA_HORARIA))
         
         context.job_queue.run_daily(enviar_recordatorio, time_to_run, chat_id=chat_id, name=str(chat_id))
-        
         return True, ""
     except Exception as e:
-        print(f"Error programando DB: {e}")
         return False, str(e)
 
 # --- 5. COMANDOS ---
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[
         InlineKeyboardButton("👶 Niño", callback_data="cat_nino"),
@@ -144,7 +129,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 `/programar` → Configurar alarma.\n\n"
         "👇 **Elige tu etapa para comenzar:**"
     )
-    
     await update.message.reply_text(mensaje, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def enviar_cita_random(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,7 +136,6 @@ async def enviar_cita_random(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
         cursor.execute("SELECT categoria FROM usuarios WHERE telegram_id = %s", (telegram_id,))
         res = cursor.fetchone()
         
@@ -176,7 +159,6 @@ async def programar_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         hora_input = context.args[0]
         chat_id = update.effective_chat.id
-        
         if not re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", hora_input):
             await update.message.reply_text("❌ Formato incorrecto. Usa HH:MM.")
             return
@@ -188,6 +170,7 @@ async def programar_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Error Técnico:\n`{error_msg}`", parse_mode="Markdown")
         return
 
+    # Menú de horas (para el comando escrito)
     keyboard = [
         [InlineKeyboardButton("🌅 06:00 AM", callback_data="time_06:00"), InlineKeyboardButton("☀️ 07:00 AM", callback_data="time_07:00")],
         [InlineKeyboardButton("🕗 08:00 AM", callback_data="time_08:00"), InlineKeyboardButton("🌙 09:00 PM", callback_data="time_21:00")],
@@ -196,50 +179,63 @@ async def programar_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("⏰ **Elige hora de lectura:**", reply_markup=reply_markup, parse_mode="Markdown")
 
-# --- 6. MANEJADOR DE BOTONES (CON DIAGNÓSTICO) ---
+
 async def manejar_botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
     chat_id = query.from_user.id
 
-    # Caso 1: Categoría
+    # CASO 1: EL USUARIO ELIGIÓ CATEGORÍA
     if data.startswith("cat_"):
         categoria = data.replace("cat_", "")
         try:
-            print(f"Intentando guardar usuario {chat_id} categoría {categoria}") # LOG
             conn = get_db_connection()
             cursor = conn.cursor()
+            
+            # 1. Guardamos la categoría en la BD
+            # Usamos ON DUPLICATE KEY para que si ya existe, solo la actualice
             sql = "INSERT INTO usuarios (telegram_id, categoria) VALUES (%s, %s) ON DUPLICATE KEY UPDATE categoria = %s"
             cursor.execute(sql, (chat_id, categoria, categoria))
             conn.commit()
             conn.close()
             
+            # 2. DEFINIMOS EL TECLADO DEL RELOJ AQUÍ MISMO (Para evitar el error NoneType)
+            keyboard_horas = [
+                [InlineKeyboardButton("🌅 06:00 AM", callback_data="time_06:00"), InlineKeyboardButton("☀️ 07:00 AM", callback_data="time_07:00")],
+                [InlineKeyboardButton("🕗 08:00 AM", callback_data="time_08:00"), InlineKeyboardButton("🌙 09:00 PM", callback_data="time_21:00")],
+                [InlineKeyboardButton("✏️ Manual", callback_data="time_manual")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard_horas)
+            
+            # 3. Editamos el mensaje original (ESTO ES LO QUE ARREGLA EL ERROR)
             await query.edit_message_text(
-                f"✅ Categoría guardada: **{categoria.capitalize()}**.\nAhora elige la hora:", 
+                f"✅ Categoría guardada: **{categoria.capitalize()}**.\n\n"
+                "⏰ **Ahora configura tu hora de lectura:**", 
+                reply_markup=reply_markup,
                 parse_mode="Markdown"
             )
-            context.args = []
-            await programar_horario(update, context)
             
         except Exception as e:
-            # ESTO ES LO QUE NECESITAMOS VER
-            print(f"ERROR FATAL SQL: {e}")
+            # Si falla la base de datos, te avisará aquí
+            print(f"ERROR SQL: {e}")
             await query.edit_message_text(f"❌ Error Base de Datos:\n`{str(e)}`", parse_mode="Markdown")
 
-    # Caso 2: Hora
+    # CASO 2: EL USUARIO ELIGIÓ HORA
     elif data.startswith("time_"):
         hora = data.replace("time_", "")
+        
         if hora == "manual":
-            await query.edit_message_text("Escribe: `/programar 07:30`", parse_mode="Markdown")
+            await query.edit_message_text("✏️ Escribe el comando así:\n`/programar 07:30`", parse_mode="Markdown")
             return
         
+        # Llamamos a la función de lógica interna (no a la del comando)
         exito, error_msg = await guardar_y_activar_alarma(chat_id, hora, context)
+        
         if exito:
-            await query.edit_message_text(f"✅ Recordatorio diario a las **{hora}**.", parse_mode="Markdown")
+            await query.edit_message_text(f"✅ ¡Excelente! Te recordaré leer la biblia todos los días a las **{hora}**.", parse_mode="Markdown")
         else:
             await query.edit_message_text(f"❌ Error al guardar hora:\n`{error_msg}`", parse_mode="Markdown")
-
 # --- 7. RESTAURACIÓN ---
 async def restaurar_alarmas(application):
     print("🔄 Restaurando alarmas...")
@@ -274,7 +270,7 @@ def main():
     app.add_handler(CommandHandler("programar", programar_horario))
     app.add_handler(CallbackQueryHandler(manejar_botones))
 
-    print("Bot corriendo con Diagnóstico de Errores...")
+    print("Bot corriendo - Versión Final Corregida...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
